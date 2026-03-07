@@ -798,7 +798,7 @@ function App() {
             <article key={team.id} className="card-championship p-4">
               <div className="mb-3 h-36 overflow-hidden rounded-xl bg-slate-900">
                 {team.photoDataUrl ? (
-                  <img src={team.photoDataUrl} alt={team.name} className="h-full w-full object-cover" />
+                  <img src={team.photoDataUrl} alt={team.name} className="h-full w-full object-fill" />
                 ) : (
                   <div className="flex h-full items-center justify-center text-slate-500">Photo equipe</div>
                 )}
@@ -977,7 +977,7 @@ function App() {
                             teamA?.photoDataUrl
                               ? {
                                   backgroundImage: `linear-gradient(rgba(2, 6, 23, 0.64), rgba(2, 6, 23, 0.64)), url(${teamA.photoDataUrl})`,
-                                  backgroundSize: 'cover',
+                                  backgroundSize: '100% 100%',
                                   backgroundPosition: 'center',
                                 }
                               : undefined
@@ -997,7 +997,7 @@ function App() {
                             teamB?.photoDataUrl
                               ? {
                                   backgroundImage: `linear-gradient(rgba(2, 6, 23, 0.64), rgba(2, 6, 23, 0.64)), url(${teamB.photoDataUrl})`,
-                                  backgroundSize: 'cover',
+                                  backgroundSize: '100% 100%',
                                   backgroundPosition: 'center',
                                 }
                               : undefined
