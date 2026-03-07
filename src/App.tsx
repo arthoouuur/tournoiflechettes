@@ -17,9 +17,10 @@ import {
   unsubscribeChannel,
   type MatchLock,
 } from './remoteSync'
-import { applyDartToLeg, undoLastDart } from './scoring'
+import { applyDartToLeg, createInitialLeg, undoLastDart } from './scoring'
 import { isSupabaseConfigured, supabase } from './supabase'
 import {
+  archiveTournamentState,
   getOrCreateDeviceId,
   loadRefereeLabel,
   saveRefereeLabel,
@@ -120,6 +121,17 @@ function readFileAsDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(new Error('Echec de lecture du fichier'))
     reader.readAsDataURL(file)
   })
+}
+
+function downloadArchiveFile(payload: unknown, filename: string): void {
+  const json = JSON.stringify(payload, null, 2)
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 function App() {
@@ -381,6 +393,123 @@ function App() {
     setSelectedPhase('all')
     setFeedback('Tournoi cree: 9 equipes, 3 poules, matchs de poules prets.')
     setActiveTab('teams')
+  }
+
+  function completeMatchForTest(match: Match): Match {
+    if (!match.teamAId || !match.teamBId) {
+      return match
+    }
+
+    const winnerTeamId = Math.random() < 0.5 ? match.teamAId : match.teamBId
+    return {
+      ...match,
+      status: 'done',
+      legs: match.legs.map((leg, index) => {
+        if (index >= 2) {
+          return createInitialLeg(leg.type)
+        }
+        return {
+          ...leg,
+          winnerTeamId,
+          isDone: true,
+          currentTurnDarts: [],
+          lastTurnDartsA: [],
+          lastTurnDartsB: [],
+          dartsInTurn: 0,
+        }
+      }),
+    }
+  }
+
+  function handleSimulatePoolsAndGenerateKnockout(): void {
+    if (!canEdit) {
+      setFeedback('Seul l arbitre actif peut modifier le tournoi.')
+      return
+    }
+
+    updateTournament((prev) => {
+      let matches = prev.matches
+
+      for (const poolMatch of matches.filter((m) => m.phase === 'pool')) {
+        matches = updateMatchById(matches, poolMatch.id, (current) => completeMatchForTest(current))
+      }
+
+      return upsertKnockoutFromStandings({
+        ...prev,
+        matches,
+      })
+    })
+
+    setSelectedPhase('quarter')
+    setActiveTab('matches')
+    setFeedback('Simulation terminee: poules remplies et quarts generes.')
+  }
+
+  function handleSimulateKnockoutBracket(): void {
+    if (!canEdit) {
+      setFeedback('Seul l arbitre actif peut modifier le tournoi.')
+      return
+    }
+
+    updateTournament((prev) => {
+      const withKnockout = upsertKnockoutFromStandings(prev)
+      let matches = withKnockout.matches
+
+      for (const label of ['QF1', 'QF2', 'QF3', 'QF4', 'SF1', 'SF2', 'Finale']) {
+        const match = matches.find((m) => m.label === label)
+        if (!match || !match.teamAId || !match.teamBId) {
+          continue
+        }
+        if (resolveMatchWinner(match)) {
+          continue
+        }
+
+        matches = updateMatchById(matches, match.id, (current) => completeMatchForTest(current))
+      }
+
+      return {
+        ...withKnockout,
+        matches,
+      }
+    })
+
+    setSelectedPhase('final')
+    setActiveTab('matches')
+    setFeedback('Simulation terminee: quarts, demies et finale joues automatiquement.')
+  }
+
+  function handleArchiveAndResetTournament(): void {
+    if (!canEdit) {
+      setFeedback('Seul l arbitre actif peut modifier le tournoi.')
+      return
+    }
+
+    const hasTournamentData = state.players.length > 0 || state.teams.length > 0 || state.matches.length > 0
+    if (!hasTournamentData) {
+      setFeedback('Aucun tournoi a archiver pour le moment.')
+      return
+    }
+
+    const archiveResult = archiveTournamentState(state)
+    const stamp = archiveResult.archive.createdAtIso.replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+    downloadArchiveFile(archiveResult.archive, `darts-archive-${stamp}.json`)
+
+    const empty = createInitialState()
+    updateTournament(() => empty)
+    setPlayersText('')
+    setTeamNameDrafts({})
+    setSelectedMultiplier(1)
+    setLocalSelectedMatchId(undefined)
+    setSelectedPhase('all')
+    setActiveTab('setup')
+    if (archiveResult.storedLocally) {
+      setFeedback(
+        `Tournoi archive (${archiveResult.totalArchives} archive(s) locale(s)) et remis a zero.`,
+      )
+      return
+    }
+
+    setFeedback('Tournoi exporte en fichier, mais stockage local plein: ancienne archives conservees.')
   }
 
   function handleRenameTeam(teamId: string, nextName: string): void {
@@ -737,6 +866,33 @@ function App() {
               className="mt-4 w-full rounded-xl bg-amber-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Generer 9 binomes + 3 poules
+            </button>
+            <button
+              type="button"
+              onClick={handleSimulatePoolsAndGenerateKnockout}
+              disabled={!canEdit}
+              hidden
+              className="mt-3 w-full rounded-xl bg-teal-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Simuler poules + generer quarts
+            </button>
+            <button
+              type="button"
+              onClick={handleSimulateKnockoutBracket}
+              disabled={!canEdit}
+              hidden
+              className="mt-3 w-full rounded-xl bg-fuchsia-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Simuler quarts, demies et finale
+            </button>
+            <button
+              type="button"
+              onClick={handleArchiveAndResetTournament}
+              disabled={!canEdit}
+              hidden
+              className="mt-3 w-full rounded-xl bg-rose-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Archiver et nouveau tournoi
             </button>
             <p className="mt-3 text-sm text-amber-100">{feedback}</p>
           </article>
