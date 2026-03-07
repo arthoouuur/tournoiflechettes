@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type { Session, User } from '@supabase/supabase-js'
 import { playVictorySound } from './audio'
 import type { DartMultiplier, Match, MatchPhase, Team, TournamentState } from './models'
 import {
@@ -17,7 +18,7 @@ import {
   type MatchLock,
 } from './remoteSync'
 import { applyDartToLeg, undoLastDart } from './scoring'
-import { isSupabaseConfigured } from './supabase'
+import { isSupabaseConfigured, supabase } from './supabase'
 import {
   getOrCreateDeviceId,
   loadRefereeLabel,
@@ -134,6 +135,11 @@ function App() {
   const [syncStatus, setSyncStatus] = useState(
     isSupabaseConfigured ? 'Sync Supabase activee.' : 'Mode local uniquement (Supabase non configure).',
   )
+  const [session, setSession] = useState<Session | null>(null)
+  const [authLoading, setAuthLoading] = useState(isSupabaseConfigured)
+  const [allowlistChecked, setAllowlistChecked] = useState(!isSupabaseConfigured)
+  const [isAllowlisted, setIsAllowlisted] = useState(!isSupabaseConfigured)
+  const [authError, setAuthError] = useState<string | null>(null)
   const [matchLocks, setMatchLocks] = useState<MatchLock[]>([])
   const [refereeLabel, setRefereeLabel] = useState(loadRefereeLabel)
   const [isRefereeMode, setIsRefereeMode] = useState(false)
@@ -163,6 +169,94 @@ function App() {
   const canEdit = !isSupabaseConfigured || isRefereeMode
 
   const standings = useMemo(() => rankTeamsForKnockout(state), [state])
+
+  async function refreshAllowlistForUser(user: User | null): Promise<void> {
+    if (!isSupabaseConfigured || !supabase) {
+      setIsAllowlisted(true)
+      setAllowlistChecked(true)
+      setAuthError(null)
+      return
+    }
+
+    if (!user?.email) {
+      setIsAllowlisted(false)
+      setAllowlistChecked(true)
+      setAuthError(null)
+      return
+    }
+
+    const { data, error } = await supabase
+      .from('allowed_users')
+      .select('email')
+      .ilike('email', user.email)
+      .maybeSingle()
+
+    if (error) {
+      setIsAllowlisted(false)
+      setAllowlistChecked(true)
+      setAuthError(`Erreur allowlist: ${error.message}`)
+      return
+    }
+
+    setIsAllowlisted(Boolean(data))
+    setAllowlistChecked(true)
+    setAuthError(null)
+  }
+
+  async function signInWithGoogle(): Promise<void> {
+    if (!supabase) {
+      return
+    }
+
+    const { error } = await supabase.auth.signInWithOAuth({ provider: 'google' })
+    if (error) {
+      setAuthError(`Erreur login Google: ${error.message}`)
+    }
+  }
+
+  async function signOut(): Promise<void> {
+    if (!supabase) {
+      return
+    }
+
+    await supabase.auth.signOut()
+    setSession(null)
+    setIsAllowlisted(false)
+    setAllowlistChecked(true)
+  }
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      return
+    }
+
+    let isActive = true
+
+    void supabase.auth.getSession().then(async ({ data }) => {
+      if (!isActive) {
+        return
+      }
+      const nextSession = data.session
+      setSession(nextSession)
+      await refreshAllowlistForUser(nextSession?.user ?? null)
+      if (!isActive) {
+        return
+      }
+      setAuthLoading(false)
+    })
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession)
+      void refreshAllowlistForUser(nextSession?.user ?? null)
+    })
+
+    return () => {
+      isActive = false
+      subscription.unsubscribe()
+    }
+  }, [])
 
   useEffect(() => {
     saveRefereeLabel(refereeLabel)
@@ -508,6 +602,58 @@ function App() {
     Boolean(selectedMatch?.teamAId && selectedMatch?.teamBId) &&
     selectedMatch?.status === 'waiting' &&
     canEditSelectedMatch
+
+  if (isSupabaseConfigured && authLoading) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-xl items-center px-4 py-8">
+        <section className="card-championship w-full p-6 text-center">
+          <h1 className="font-display text-4xl uppercase text-white">Connexion</h1>
+          <p className="mt-2 text-slate-300">Verification de la session en cours...</p>
+        </section>
+      </main>
+    )
+  }
+
+  if (isSupabaseConfigured && !session) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-xl items-center px-4 py-8">
+        <section className="card-championship w-full p-6 text-center">
+          <h1 className="font-display text-4xl uppercase text-white">Connexion requise</h1>
+          <p className="mt-2 text-slate-300">Connecte-toi avec Google pour acceder au tournoi.</p>
+          {authError && <p className="mt-3 text-sm text-amber-200">{authError}</p>}
+          <button
+            type="button"
+            onClick={() => void signInWithGoogle()}
+            className="mt-5 rounded-xl bg-cyan-300 px-5 py-3 font-bold uppercase tracking-wide text-slate-950"
+          >
+            Se connecter avec Google
+          </button>
+        </section>
+      </main>
+    )
+  }
+
+  if (isSupabaseConfigured && allowlistChecked && !isAllowlisted) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-xl items-center px-4 py-8">
+        <section className="card-championship w-full p-6 text-center">
+          <h1 className="font-display text-4xl uppercase text-white">Acces non autorise</h1>
+          <p className="mt-2 text-slate-300">
+            Ton compte n'est pas dans la liste des utilisateurs autorises pour ce tournoi.
+          </p>
+          <p className="mt-2 text-sm text-slate-400">Compte: {session?.user?.email ?? 'inconnu'}</p>
+          {authError && <p className="mt-3 text-sm text-amber-200">{authError}</p>}
+          <button
+            type="button"
+            onClick={() => void signOut()}
+            className="mt-5 rounded-xl bg-slate-700 px-5 py-3 font-bold uppercase tracking-wide text-white"
+          >
+            Se deconnecter
+          </button>
+        </section>
+      </main>
+    )
+  }
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 md:px-8">
