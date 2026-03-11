@@ -7,6 +7,15 @@ export type LegType = 'x01-501' | 'cricket' | 'x01-301'
 export type TeamSide = 'A' | 'B'
 export type DartMultiplier = 1 | 2 | 3
 
+export type CustomSoundKey =
+  | 'victory'
+  | 'score_low'
+  | 'score_mid'
+  | 'score_high'
+  | 'cricket_zero_turn'
+
+export type CustomSoundMap = Partial<Record<CustomSoundKey, string>>
+
 export interface LegSnapshot {
   scoreA: number
   scoreB: number
@@ -75,6 +84,7 @@ export interface TournamentState {
   teams: Team[]
   pools: Pool[]
   matches: Match[]
+  customSounds: CustomSoundMap
   selectedMatchId?: string
 }
 

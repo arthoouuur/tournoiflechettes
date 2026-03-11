@@ -1,8 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Session, User } from '@supabase/supabase-js'
-import { playVictorySound } from './audio'
-import type { DartMultiplier, Match, MatchPhase, Player, Team, TournamentState } from './models'
+import {
+  playCricketZeroTurnSound,
+  playScoreBandSound,
+  playVictorySound,
+} from './audio'
+import type {
+  CustomSoundKey,
+  DartMultiplier,
+  Match,
+  MatchPhase,
+  Player,
+  Team,
+  TournamentState,
+} from './models'
 import {
   fetchAllMatchLocks,
   fetchMatchLock,
@@ -155,6 +167,25 @@ function mapPlayersToDraftRows(players: Player[]): PlayerDraft[] {
   return mapped
 }
 
+function parseDartLabelPoints(dartLabel: string): number {
+  const match = /^([SDT])(B|\d{1,2})$/i.exec(dartLabel.trim())
+  if (!match) {
+    return 0
+  }
+
+  const multiplier = match[1].toUpperCase() === 'D' ? 2 : match[1].toUpperCase() === 'T' ? 3 : 1
+  const base = match[2].toUpperCase() === 'B' ? 25 : Number(match[2])
+  if (!Number.isFinite(base)) {
+    return 0
+  }
+
+  return Math.max(0, base) * multiplier
+}
+
+function getTurnTotalPoints(turnDarts: string[]): number {
+  return turnDarts.reduce((sum, dart) => sum + parseDartLabelPoints(dart), 0)
+}
+
 function App() {
   const queryClient = useQueryClient()
   const deviceId = useMemo(() => getOrCreateDeviceId(), [])
@@ -195,7 +226,8 @@ function App() {
     if (selectedPhase === 'all') {
       return state.matches
     }
-    return state.matches.filter((match) => match.phase === selectedPhase)
+    const inPhase = state.matches.filter((match) => match.phase === selectedPhase)
+    return inPhase.length > 0 ? inPhase : state.matches
   }, [selectedPhase, state.matches])
 
   const selectedMatch =
@@ -207,6 +239,7 @@ function App() {
   const canEdit = !isSupabaseConfigured || isRefereeMode
 
   const standings = useMemo(() => rankTeamsForKnockout(state), [state])
+  const customSounds = state.customSounds ?? {}
 
   async function refreshAllowlistForUser(user: User | null): Promise<void> {
     if (!isSupabaseConfigured || !supabase) {
@@ -416,6 +449,7 @@ function App() {
       teams,
       pools,
       matches,
+      customSounds,
       selectedMatchId: matches[0]?.id,
     }
 
@@ -443,6 +477,40 @@ function App() {
       }
       return prev.filter((draft) => draft.id !== draftId)
     })
+  }
+
+  async function handleUploadCustomSound(key: CustomSoundKey, file?: File): Promise<void> {
+    if (!file) {
+      return
+    }
+
+    const dataUrl = await readFileAsDataUrl(file)
+    updateTournament(
+      (prev) => ({
+        ...prev,
+        customSounds: {
+          ...(prev.customSounds ?? {}),
+          [key]: dataUrl,
+        },
+      }),
+      { allowNonRefereeRemoteWrite: true },
+    )
+    setFeedback(`Son local configure pour ${key}.`)
+  }
+
+  function handleClearCustomSound(key: CustomSoundKey): void {
+    updateTournament(
+      (prev) => {
+        const nextCustomSounds = { ...(prev.customSounds ?? {}) }
+        delete nextCustomSounds[key]
+        return {
+          ...prev,
+          customSounds: nextCustomSounds,
+        }
+      },
+      { allowNonRefereeRemoteWrite: true },
+    )
+    setFeedback(`Son local retire pour ${key}.`)
   }
 
   function completeMatchForTest(match: Match): Match {
@@ -588,6 +656,30 @@ function App() {
     setFeedback('Tournoi actuel supprime.')
   }
 
+  function handleDeleteKnockoutPhase(): void {
+    if (!canEdit) {
+      setFeedback('Seul l arbitre actif peut modifier le tournoi.')
+      return
+    }
+
+    const hasKnockout = state.matches.some((match) => match.phase !== 'pool')
+    if (!hasKnockout) {
+      setFeedback('Aucune phase finale a supprimer.')
+      return
+    }
+
+    updateTournament((prev) => ({
+      ...prev,
+      matches: prev.matches.filter((match) => match.phase === 'pool'),
+      selectedMatchId: prev.matches.find((match) => match.phase === 'pool')?.id,
+    }))
+
+    setSelectedPhase('all')
+    setLocalSelectedMatchId(undefined)
+    setActiveTab('matches')
+    setFeedback('Phase finale supprimee. Les matchs de poules sont conserves.')
+  }
+
   function handleRenameTeam(teamId: string, nextName: string): void {
     updateTournament((prev) => ({
       ...prev,
@@ -632,7 +724,7 @@ function App() {
       const after = updatedMatches.find((match) => match.id === matchId)
 
       if (before && after && !resolveMatchWinner(before) && resolveMatchWinner(after)) {
-        playVictorySound()
+        playVictorySound(customSounds)
       }
 
       return {
@@ -653,12 +745,36 @@ function App() {
         return current
       }
 
+      const currentLeg = current.legs[currentLegIndex]
+      const throwingSide = currentLeg.activeSide
+
       const updatedLeg = applyDartToLeg(
-        current.legs[currentLegIndex],
+        currentLeg,
         { A: current.teamAId, B: current.teamBId },
         value,
         selectedMultiplier,
       )
+
+      const turnEnded = updatedLeg.activeSide !== throwingSide || updatedLeg.isDone
+      if (turnEnded) {
+        const turnDarts =
+          updatedLeg.activeSide !== throwingSide
+            ? throwingSide === 'A'
+              ? (updatedLeg.lastTurnDartsA ?? [])
+              : (updatedLeg.lastTurnDartsB ?? [])
+            : (updatedLeg.currentTurnDarts ?? [])
+        const turnTotal = getTurnTotalPoints(turnDarts)
+        playScoreBandSound(turnTotal, customSounds)
+
+        const isCricketTurnEnd = currentLeg.type === 'cricket' && updatedLeg.activeSide !== throwingSide
+        const isTripleZeroTurn =
+          isCricketTurnEnd &&
+          (turnDarts.length ?? 0) === 3 &&
+          turnDarts.every((dart) => /^([SDT])0$/.test(dart))
+        if (isTripleZeroTurn) {
+          playCricketZeroTurnSound(customSounds)
+        }
+      }
 
       return {
         ...current,
@@ -997,7 +1113,7 @@ function App() {
               type="button"
               onClick={handleSimulatePoolsAndGenerateKnockout}
               disabled={!canEdit}
-              hidden
+              hidden={false}
               className="mt-3 w-full rounded-xl bg-teal-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Simuler poules + generer quarts
@@ -1006,7 +1122,7 @@ function App() {
               type="button"
               onClick={handleSimulateKnockoutBracket}
               disabled={!canEdit}
-              hidden
+              hidden={false}
               className="mt-3 w-full rounded-xl bg-fuchsia-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Simuler quarts, demies et finale
@@ -1015,7 +1131,7 @@ function App() {
               type="button"
               onClick={handleArchiveAndResetTournament}
               disabled={!canEdit}
-              hidden
+              hidden={false}
               className="mt-3 w-full rounded-xl bg-rose-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Archiver et nouveau tournoi
@@ -1028,6 +1144,48 @@ function App() {
             >
               Supprimer le tournoi actuel
             </button>
+
+            <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+              <p className="text-sm font-semibold uppercase tracking-wide text-slate-200">Sons locaux</p>
+              <p className="mt-1 text-xs text-slate-400">
+                Ces sons sont synchronises avec le tournoi et partages a tous les appareils connectes.
+              </p>
+              {([
+                { key: 'victory', label: 'Victoire match' },
+                { key: 'score_low', label: 'Score < 10' },
+                { key: 'score_mid', label: 'Score 20 - 50' },
+                { key: 'score_high', label: 'Score > 60' },
+                { key: 'cricket_zero_turn', label: 'Cricket: 3 zeros' },
+              ] as { key: CustomSoundKey; label: string }[]).map((entry) => (
+                <div key={entry.key} className="mt-3 rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                  <p className="text-sm text-slate-200">{entry.label}</p>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <label className="rounded-lg bg-slate-700 px-3 py-2 text-center text-xs font-bold uppercase tracking-wide text-white">
+                      Choisir fichier
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0]
+                          void handleUploadCustomSound(entry.key, file)
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => handleClearCustomSound(entry.key)}
+                      className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-100"
+                    >
+                      Retirer
+                    </button>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {customSounds[entry.key] ? 'Son local actif' : 'Son synthese par defaut'}
+                  </p>
+                </div>
+              ))}
+            </div>
             <p className="mt-3 text-sm text-amber-100">{feedback}</p>
           </article>
 
@@ -1077,6 +1235,14 @@ function App() {
               className="mt-5 w-full rounded-xl bg-cyan-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Generer phase finale (Top 8)
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteKnockoutPhase}
+              disabled={!canEdit}
+              className="mt-3 w-full rounded-xl bg-slate-700 px-4 py-3 font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Supprimer phase finale
             </button>
           </article>
         </section>

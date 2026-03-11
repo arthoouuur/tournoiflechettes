@@ -45,6 +45,7 @@ export function normalizeTournamentState(raw: Partial<TournamentState>): Tournam
       ...player,
       excludedPlayerNames: player?.excludedPlayerNames ?? [],
     })),
+    customSounds: raw.customSounds ?? {},
     teams: raw.teams ?? [],
     pools: raw.pools ?? [],
     matches: (raw.matches ?? []).map((match) => ({

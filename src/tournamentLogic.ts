@@ -39,6 +39,7 @@ export function createInitialState(): TournamentState {
     teams: [],
     pools: [],
     matches: [],
+    customSounds: {},
     selectedMatchId: undefined,
   }
 }
