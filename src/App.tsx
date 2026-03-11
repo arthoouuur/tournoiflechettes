@@ -1140,6 +1140,7 @@ function App() {
               type="button"
               onClick={handleDeleteCurrentTournament}
               disabled={!canEdit}
+              hidden={false}
               className="mt-3 w-full rounded-xl bg-rose-500 px-4 py-3 font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
               Supprimer le tournoi actuel
@@ -1439,11 +1440,11 @@ function App() {
                               : undefined
                           }
                         >
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-400 font-bold">
                             {activeLeg.type === 'cricket' ? `Restant ${teamAName}` : `Score ${teamAName}`}
                           </p>
-                          <p className="font-display text-5xl text-white">{activeLeg.scoreA}</p>
-                          <p className="mt-1 text-xs text-slate-300">
+                          <p className="font-display text-5xl text-white font-bold" style={{textShadow: '-2px -2px 0 black, 2px -2px 0 black, -2px 2px 0 black, 2px 2px 0 black, 0 0 8px black'}}>{activeLeg.scoreA}</p>
+                          <p className="mt-1 text-xs text-slate-300 font-bold">
                             Fleches: {displayDartsA.length > 0 ? displayDartsA.join(' | ') : '-'}
                           </p>
                         </div>
@@ -1459,11 +1460,11 @@ function App() {
                               : undefined
                           }
                         >
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-400 font-bold">
                             {activeLeg.type === 'cricket' ? `Restant ${teamBName}` : `Score ${teamBName}`}
                           </p>
-                          <p className="font-display text-5xl text-white">{activeLeg.scoreB}</p>
-                          <p className="mt-1 text-xs text-slate-300">
+                          <p className="font-display text-5xl text-white font-bold" style={{textShadow: '-2px -2px 0 black, 2px -2px 0 black, -2px 2px 0 black, 2px 2px 0 black, 0 0 8px black'}}>{activeLeg.scoreB}</p>
+                          <p className="mt-1 text-xs text-slate-300 font-bold">
                             Fleches: {displayDartsB.length > 0 ? displayDartsB.join(' | ') : '-'}
                           </p>
                         </div>
