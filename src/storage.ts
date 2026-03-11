@@ -41,7 +41,10 @@ export function normalizeTournamentState(raw: Partial<TournamentState>): Tournam
   return {
     ...base,
     ...raw,
-    players: raw.players ?? [],
+    players: (raw.players ?? []).map((player) => ({
+      ...player,
+      excludedPlayerNames: player?.excludedPlayerNames ?? [],
+    })),
     teams: raw.teams ?? [],
     pools: raw.pools ?? [],
     matches: (raw.matches ?? []).map((match) => ({

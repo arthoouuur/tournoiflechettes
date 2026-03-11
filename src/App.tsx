@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Session, User } from '@supabase/supabase-js'
 import { playVictorySound } from './audio'
-import type { DartMultiplier, Match, MatchPhase, Team, TournamentState } from './models'
+import type { DartMultiplier, Match, MatchPhase, Player, Team, TournamentState } from './models'
 import {
   fetchAllMatchLocks,
   fetchMatchLock,
@@ -31,9 +31,11 @@ import {
 import {
   buildPoolsAndPoolMatches,
   buildRandomTeams,
+  createEmptyPlayerDraft,
   createInitialState,
-  createPlayersFromText,
+  createPlayersFromDrafts,
   getCurrentLegIndex,
+  type PlayerDraft,
   rankTeamsForKnockout,
   resolveMatchWinner,
   updateMatchById,
@@ -46,6 +48,7 @@ const X01_KEYS = Array.from({ length: 26 }, (_, index) => index).filter(
 )
 const CRICKET_KEYS = [0, 15, 16, 17, 18, 19, 20, 25]
 const CRICKET_TARGETS = [25, 20, 19, 18, 17, 16, 15]
+const MIN_PLAYER_COUNT = 18
 
 type TabId = 'setup' | 'teams' | 'matches'
 type PhaseFilter = 'all' | MatchPhase
@@ -134,13 +137,36 @@ function downloadArchiveFile(payload: unknown, filename: string): void {
   URL.revokeObjectURL(url)
 }
 
+function createInitialPlayerDraftRows(): PlayerDraft[] {
+  return Array.from({ length: MIN_PLAYER_COUNT }, () => createEmptyPlayerDraft())
+}
+
+function mapPlayersToDraftRows(players: Player[]): PlayerDraft[] {
+  const mapped = players.map((player) => ({
+    id: player.id,
+    name: player.name,
+    exclusionsText: player.excludedPlayerNames.join(', '),
+  }))
+
+  while (mapped.length < MIN_PLAYER_COUNT) {
+    mapped.push(createEmptyPlayerDraft())
+  }
+
+  return mapped
+}
+
 function App() {
   const queryClient = useQueryClient()
   const deviceId = useMemo(() => getOrCreateDeviceId(), [])
   const [activeTab, setActiveTab] = useState<TabId>('setup')
   const [selectedPhase, setSelectedPhase] = useState<PhaseFilter>('all')
   const [localSelectedMatchId, setLocalSelectedMatchId] = useState<string | undefined>(undefined)
-  const [playersText, setPlayersText] = useState('')
+  const [playerDraftRows, setPlayerDraftRows] = useState<PlayerDraft[]>(() => {
+    const persistedPlayers = loadTournamentState().players
+    return persistedPlayers.length > 0
+      ? mapPlayersToDraftRows(persistedPlayers)
+      : createInitialPlayerDraftRows()
+  })
   const [teamNameDrafts, setTeamNameDrafts] = useState<Record<string, string>>({})
   const [feedback, setFeedback] = useState('')
   const [selectedMultiplier, setSelectedMultiplier] = useState<DartMultiplier>(1)
@@ -371,13 +397,18 @@ function App() {
       return
     }
 
-    const players = createPlayersFromText(playersText)
-    if (players.length < 18) {
-      setFeedback('Ajoute au moins 18 joueurs (une ligne par joueur).')
+    const players = createPlayersFromDrafts(playerDraftRows)
+    if (players.length < MIN_PLAYER_COUNT) {
+      setFeedback('Renseigne au moins 18 joueurs dans le tableau.')
       return
     }
 
     const teams = buildRandomTeams(players).slice(0, 9)
+    if (teams.length < 9) {
+      setFeedback('Impossible de former 9 binomes en respectant les exclusions renseignees.')
+      return
+    }
+
     const { pools, matches } = buildPoolsAndPoolMatches(teams)
 
     const next: TournamentState = {
@@ -393,6 +424,25 @@ function App() {
     setSelectedPhase('all')
     setFeedback('Tournoi cree: 9 equipes, 3 poules, matchs de poules prets.')
     setActiveTab('teams')
+  }
+
+  function handleUpdatePlayerDraft(draftId: string, field: 'name' | 'exclusionsText', value: string): void {
+    setPlayerDraftRows((prev) =>
+      prev.map((draft) => (draft.id === draftId ? { ...draft, [field]: value } : draft)),
+    )
+  }
+
+  function handleAddPlayerRow(): void {
+    setPlayerDraftRows((prev) => [...prev, createEmptyPlayerDraft()])
+  }
+
+  function handleRemovePlayerRow(draftId: string): void {
+    setPlayerDraftRows((prev) => {
+      if (prev.length <= MIN_PLAYER_COUNT) {
+        return prev
+      }
+      return prev.filter((draft) => draft.id !== draftId)
+    })
   }
 
   function completeMatchForTest(match: Match): Match {
@@ -496,7 +546,7 @@ function App() {
 
     const empty = createInitialState()
     updateTournament(() => empty)
-    setPlayersText('')
+    setPlayerDraftRows(createInitialPlayerDraftRows())
     setTeamNameDrafts({})
     setSelectedMultiplier(1)
     setLocalSelectedMatchId(undefined)
@@ -510,6 +560,32 @@ function App() {
     }
 
     setFeedback('Tournoi exporte en fichier, mais stockage local plein: ancienne archives conservees.')
+  }
+
+  function handleDeleteCurrentTournament(): void {
+    if (!canEdit) {
+      setFeedback('Seul l arbitre actif peut modifier le tournoi.')
+      return
+    }
+
+    const hasTournamentData = state.players.length > 0 || state.teams.length > 0 || state.matches.length > 0
+    if (!hasTournamentData) {
+      setFeedback('Aucun tournoi en cours a supprimer.')
+      return
+    }
+
+    if (!window.confirm('Supprimer le tournoi actuel sans l archiver ?')) {
+      return
+    }
+
+    updateTournament(() => createInitialState())
+    setPlayerDraftRows(createInitialPlayerDraftRows())
+    setTeamNameDrafts({})
+    setSelectedMultiplier(1)
+    setLocalSelectedMatchId(undefined)
+    setSelectedPhase('all')
+    setActiveTab('setup')
+    setFeedback('Tournoi actuel supprime.')
   }
 
   function handleRenameTeam(teamId: string, nextName: string): void {
@@ -787,11 +863,10 @@ function App() {
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 md:px-8">
       <section className="card-championship mb-6 p-6">
-        <p className="text-xs uppercase tracking-[0.3em] text-cyan-300/80">PWA tournoi de flechettes</p>
-        <h1 className="font-display text-4xl uppercase text-white md:text-6xl">Darts Championship Control</h1>
+        <p className="text-xs uppercase tracking-[0.3em] text-cyan-300/80">Tournoi de fléchettes</p>
+        <h1 className="font-display text-4xl uppercase text-white md:text-6xl">Tournoi de fléchettes de bâtard</h1>
         <p className="mt-2 max-w-3xl text-slate-300">
-          Binomes aleatoires, poules de 3, top 8 en phase finale et score tablette en 3 legs: 501,
-          cricket, puis 301 si necessaire.
+          Binomes aléatoires, poules de 3, top 8 en phase finale et score en 3 legs: 501, cricket, puis 301 si nécessaire.
         </p>
 
         <div className="mt-5 grid gap-3 rounded-xl bg-slate-950/60 p-4 md:grid-cols-[1fr,auto,auto]">
@@ -852,13 +927,64 @@ function App() {
         <section className="grid gap-6 lg:grid-cols-2">
           <article className="card-championship p-5">
             <h2 className="font-display text-3xl uppercase text-white">1. Joueurs et tirage</h2>
-            <p className="text-slate-300">Entre les 18 joueurs (une ligne = un joueur).</p>
-            <textarea
-              value={playersText}
-              onChange={(event) => setPlayersText(event.target.value)}
-              placeholder={'Arthur\nLina\nNolan\n...'}
-              className="mt-3 h-72 w-full rounded-xl border border-slate-700 bg-slate-950/80 p-3 text-sm text-white outline-none ring-cyan-400 focus:ring"
-            />
+            <p className="text-slate-300">
+              Renseigne les joueurs dans le tableau. La colonne exclusion accepte des noms separes par des virgules.
+            </p>
+            <div className="mt-3 overflow-x-auto rounded-xl border border-slate-700">
+              <table className="w-full min-w-[40rem] border-collapse text-sm">
+                <thead className="bg-slate-900/90 text-slate-200">
+                  <tr>
+                    <th className="px-3 py-2 text-left">#</th>
+                    <th className="px-3 py-2 text-left">Nom du joueur</th>
+                    <th className="px-3 py-2 text-left">Exclusion(s)</th>
+                    <th className="px-3 py-2 text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {playerDraftRows.map((draft, index) => (
+                    <tr key={draft.id} className="border-t border-slate-800 bg-slate-950/40 align-top">
+                      <td className="px-3 py-2 text-slate-400">{index + 1}</td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={draft.name}
+                          onChange={(event) => handleUpdatePlayerDraft(draft.id, 'name', event.target.value)}
+                          placeholder="Nom du joueur"
+                          className="w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-white outline-none ring-cyan-400 focus:ring"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={draft.exclusionsText}
+                          onChange={(event) =>
+                            handleUpdatePlayerDraft(draft.id, 'exclusionsText', event.target.value)
+                          }
+                          placeholder="Ex: Arthur, Lina"
+                          className="w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-white outline-none ring-cyan-400 focus:ring"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <button
+                          type="button"
+                          onClick={() => handleRemovePlayerRow(draft.id)}
+                          disabled={playerDraftRows.length <= MIN_PLAYER_COUNT}
+                          className="rounded-lg bg-slate-700 px-3 py-2 text-xs font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Retirer
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <button
+              type="button"
+              onClick={handleAddPlayerRow}
+              disabled={!canEdit}
+              className="mt-3 w-full rounded-xl bg-slate-700 px-4 py-3 font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Ajouter une ligne joueur
+            </button>
             <button
               type="button"
               onClick={handleGenerateTournament}
@@ -893,6 +1019,14 @@ function App() {
               className="mt-3 w-full rounded-xl bg-rose-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Archiver et nouveau tournoi
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteCurrentTournament}
+              disabled={!canEdit}
+              className="mt-3 w-full rounded-xl bg-rose-500 px-4 py-3 font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Supprimer le tournoi actuel
             </button>
             <p className="mt-3 text-sm text-amber-100">{feedback}</p>
           </article>

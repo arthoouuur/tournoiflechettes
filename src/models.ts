@@ -26,6 +26,7 @@ export interface LegSnapshot {
 export interface Player {
   id: string
   name: string
+  excludedPlayerNames: string[]
 }
 
 export interface Team {

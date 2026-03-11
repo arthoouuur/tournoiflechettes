@@ -12,6 +12,12 @@ import { createInitialLeg } from './scoring'
 
 const LEG_TYPES: LegResult['type'][] = ['x01-501', 'cricket', 'x01-301']
 
+export interface PlayerDraft {
+  id: string
+  name: string
+  exclusionsText: string
+}
+
 function createId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`
 }
@@ -37,30 +43,82 @@ export function createInitialState(): TournamentState {
   }
 }
 
-export function createPlayersFromText(raw: string): Player[] {
-  return raw
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((name) => ({ id: createId('player'), name }))
+export function createEmptyPlayerDraft(): PlayerDraft {
+  return {
+    id: createId('player_draft'),
+    name: '',
+    exclusionsText: '',
+  }
+}
+
+export function createPlayersFromDrafts(drafts: PlayerDraft[]): Player[] {
+  return drafts
+    .map((draft) => ({
+      id: createId('player'),
+      name: draft.name.trim(),
+      excludedPlayerNames: draft.exclusionsText
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0),
+    }))
+    .filter((player) => player.name.length > 0)
+}
+
+function normalizePlayerName(name: string): string {
+  return name.trim().toLocaleLowerCase()
+}
+
+function cannotTeamUp(first: Player, second: Player): boolean {
+  const firstName = normalizePlayerName(first.name)
+  const secondName = normalizePlayerName(second.name)
+  const firstExclusions = new Set(first.excludedPlayerNames.map(normalizePlayerName))
+  const secondExclusions = new Set(second.excludedPlayerNames.map(normalizePlayerName))
+
+  return firstExclusions.has(secondName) || secondExclusions.has(firstName)
+}
+
+function buildTeamsBacktracking(players: Player[]): Team[] | null {
+  if (players.length === 0) {
+    return []
+  }
+
+  const [first, ...rest] = players
+  const candidateIndexes = shuffle(rest.map((_, index) => index))
+
+  for (const candidateIndex of candidateIndexes) {
+    const partner = rest[candidateIndex]
+    if (cannotTeamUp(first, partner)) {
+      continue
+    }
+
+    const remaining = rest.filter((_, index) => index !== candidateIndex)
+    const nextTeams = buildTeamsBacktracking(remaining)
+    if (!nextTeams) {
+      continue
+    }
+
+    return [
+      {
+        id: createId('team'),
+        name: `${first.name} / ${partner.name}`,
+        playerIds: [first.id, partner.id],
+      },
+      ...nextTeams,
+    ]
+  }
+
+  return null
 }
 
 export function buildRandomTeams(players: Player[]): Team[] {
   const shuffled = shuffle(players)
   const usablePlayers = shuffled.slice(0, Math.floor(shuffled.length / 2) * 2)
-  const teams: Team[] = []
-
-  for (let i = 0; i < usablePlayers.length; i += 2) {
-    const first = usablePlayers[i]
-    const second = usablePlayers[i + 1]
-    teams.push({
-      id: createId('team'),
-      name: `${first.name} / ${second.name}`,
-      playerIds: [first.id, second.id],
-    })
+  const constrained = buildTeamsBacktracking(usablePlayers)
+  if (constrained) {
+    return constrained
   }
 
-  return teams
+  return []
 }
 
 function createEmptyLegs(): LegResult[] {
