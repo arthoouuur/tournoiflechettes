@@ -43,3 +43,26 @@ body {
   box-shadow: 0 14px 50px rgb(2 6 23 / 40%);
   backdrop-filter: blur(2px);
 }
+
+@keyframes active-team-border-glow {
+  0% {
+    box-shadow:
+      0 0 0 1px rgb(56 189 248 / 72%),
+      0 0 12px rgb(34 211 238 / 36%);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgb(103 232 249 / 95%),
+      0 0 24px rgb(34 211 238 / 64%);
+  }
+  100% {
+    box-shadow:
+      0 0 0 1px rgb(56 189 248 / 72%),
+      0 0 12px rgb(34 211 238 / 36%);
+  }
+}
+
+.active-team-glow {
+  border: 1px solid rgb(103 232 249 / 95%);
+  animation: active-team-border-glow 1.3s ease-in-out infinite;
+}

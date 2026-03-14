@@ -62,14 +62,40 @@ const CRICKET_KEYS = [0, 15, 16, 17, 18, 19, 20, 25]
 const CRICKET_TARGETS = [25, 20, 19, 18, 17, 16, 15]
 const MIN_PLAYER_COUNT = 18
 
-type TabId = 'setup' | 'teams' | 'matches'
+type TabId = 'setup' | 'teams' | 'matches' | 'options'
 type PhaseFilter = 'all' | MatchPhase
 
 const tabs: { id: TabId; label: string }[] = [
   { id: 'setup', label: 'Tournoi' },
   { id: 'teams', label: 'Equipes' },
   { id: 'matches', label: 'Matchs' },
+  { id: 'options', label: 'Options' },
 ]
+
+type CheckoutDart = {
+  label: string
+  points: number
+  isDouble: boolean
+}
+
+const CHECKOUT_DARTS: CheckoutDart[] = (() => {
+  const darts: CheckoutDart[] = []
+
+  for (let base = 20; base >= 1; base -= 1) {
+    darts.push({ label: `T${base}`, points: base * 3, isDouble: false })
+  }
+  for (let base = 20; base >= 1; base -= 1) {
+    darts.push({ label: `D${base}`, points: base * 2, isDouble: true })
+  }
+  for (let base = 20; base >= 1; base -= 1) {
+    darts.push({ label: `S${base}`, points: base, isDouble: false })
+  }
+
+  darts.push({ label: 'DB', points: 50, isDouble: true })
+  darts.push({ label: 'SB', points: 25, isDouble: false })
+
+  return darts
+})()
 
 function getTeamName(teams: Team[], teamId?: string): string {
   if (!teamId) {
@@ -184,6 +210,56 @@ function parseDartLabelPoints(dartLabel: string): number {
 
 function getTurnTotalPoints(turnDarts: string[]): number {
   return turnDarts.reduce((sum, dart) => sum + parseDartLabelPoints(dart), 0)
+}
+
+function buildCheckoutSuggestion(score: number): string | undefined {
+  if (!Number.isFinite(score) || score < 2 || score > 180) {
+    return undefined
+  }
+
+  for (let dartsCount = 1; dartsCount <= 3; dartsCount += 1) {
+    let best: CheckoutDart[] | undefined
+
+    const search = (remaining: number, depth: number, sequence: CheckoutDart[]): void => {
+      if (depth === dartsCount) {
+        if (remaining !== 0) {
+          return
+        }
+
+        const endsWithDouble = sequence[sequence.length - 1]?.isDouble ?? false
+        if (!best) {
+          best = [...sequence]
+          return
+        }
+
+        const bestEndsWithDouble = best[best.length - 1]?.isDouble ?? false
+        if (endsWithDouble && !bestEndsWithDouble) {
+          best = [...sequence]
+        }
+        return
+      }
+
+      for (const dart of CHECKOUT_DARTS) {
+        if (dart.points > remaining) {
+          continue
+        }
+        sequence.push(dart)
+        search(remaining - dart.points, depth + 1, sequence)
+        sequence.pop()
+
+        if (best && best.length === dartsCount && (best[best.length - 1]?.isDouble ?? false)) {
+          return
+        }
+      }
+    }
+
+    search(score, 0, [])
+    if (best) {
+      return best.map((dart) => dart.label).join(' - ')
+    }
+  }
+
+  return undefined
 }
 
 function App() {
@@ -680,6 +756,18 @@ function App() {
     setFeedback('Phase finale supprimee. Les matchs de poules sont conserves.')
   }
 
+  function handleGenerateKnockoutPhase(): void {
+    if (!canEdit) {
+      setFeedback('Seul l arbitre actif peut modifier le tournoi.')
+      return
+    }
+
+    updateTournament((prev) => upsertKnockoutFromStandings(prev))
+    setFeedback('Phase finale calculee. Tu peux scorer les quarts.')
+    setSelectedPhase('quarter')
+    setActiveTab('matches')
+  }
+
   function handleRenameTeam(teamId: string, nextName: string): void {
     updateTournament((prev) => ({
       ...prev,
@@ -755,8 +843,15 @@ function App() {
         selectedMultiplier,
       )
 
+      const nextMatch: Match = {
+        ...current,
+        status: 'in_progress',
+        legs: current.legs.map((leg, index) => (index === currentLegIndex ? updatedLeg : leg)),
+      }
+      const matchWon = Boolean(resolveMatchWinner(nextMatch))
+
       const turnEnded = updatedLeg.activeSide !== throwingSide || updatedLeg.isDone
-      if (turnEnded) {
+      if (!matchWon && turnEnded) {
         const turnDarts =
           updatedLeg.activeSide !== throwingSide
             ? throwingSide === 'A'
@@ -764,7 +859,10 @@ function App() {
               : (updatedLeg.lastTurnDartsB ?? [])
             : (updatedLeg.currentTurnDarts ?? [])
         const turnTotal = getTurnTotalPoints(turnDarts)
-        playScoreBandSound(turnTotal, customSounds)
+
+        if (currentLeg.type === 'x01-501') {
+          playScoreBandSound(turnTotal, customSounds)
+        }
 
         const isCricketTurnEnd = currentLeg.type === 'cricket' && updatedLeg.activeSide !== throwingSide
         const isTripleZeroTurn =
@@ -776,11 +874,7 @@ function App() {
         }
       }
 
-      return {
-        ...current,
-        status: 'in_progress',
-        legs: current.legs.map((leg, index) => (index === currentLegIndex ? updatedLeg : leg)),
-      }
+      return nextMatch
     })
 
     setSelectedMultiplier(1)
@@ -896,6 +990,16 @@ function App() {
   const teamAName = getTeamName(state.teams, selectedMatch?.teamAId)
   const teamBName = getTeamName(state.teams, selectedMatch?.teamBId)
   const activeTeamName = activeLeg?.activeSide === 'B' ? teamBName : teamAName
+  const activeTeamScore =
+    activeLeg?.activeSide === 'B'
+      ? activeLeg.scoreB
+      : activeLeg?.activeSide === 'A'
+        ? activeLeg.scoreA
+        : undefined
+  const checkoutSuggestion =
+    activeLeg && (activeLeg.type === 'x01-501' || activeLeg.type === 'x01-301') && activeTeamScore !== undefined
+      ? buildCheckoutSuggestion(activeTeamScore)
+      : undefined
 
   const selectedMatchLock = selectedMatch
     ? matchLocks.find((lock) => lock.matchId === selectedMatch.id && !isLockExpired(lock))
@@ -1022,7 +1126,7 @@ function App() {
         </div>
       </section>
 
-      <nav className="mb-6 grid grid-cols-3 gap-2 rounded-2xl bg-slate-900/60 p-2">
+      <nav className="mb-6 grid grid-cols-2 gap-2 rounded-2xl bg-slate-900/60 p-2 md:grid-cols-4">
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -1093,101 +1197,9 @@ function App() {
                 </tbody>
               </table>
             </div>
-            <button
-              type="button"
-              onClick={handleAddPlayerRow}
-              disabled={!canEdit}
-              className="mt-3 w-full rounded-xl bg-slate-700 px-4 py-3 font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Ajouter une ligne joueur
-            </button>
-            <button
-              type="button"
-              onClick={handleGenerateTournament}
-              disabled={!canEdit}
-              className="mt-4 w-full rounded-xl bg-amber-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Generer 9 binomes + 3 poules
-            </button>
-            <button
-              type="button"
-              onClick={handleSimulatePoolsAndGenerateKnockout}
-              disabled={!canEdit}
-              hidden={false}
-              className="mt-3 w-full rounded-xl bg-teal-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Simuler poules + generer quarts
-            </button>
-            <button
-              type="button"
-              onClick={handleSimulateKnockoutBracket}
-              disabled={!canEdit}
-              hidden={false}
-              className="mt-3 w-full rounded-xl bg-fuchsia-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Simuler quarts, demies et finale
-            </button>
-            <button
-              type="button"
-              onClick={handleArchiveAndResetTournament}
-              disabled={!canEdit}
-              hidden={false}
-              className="mt-3 w-full rounded-xl bg-rose-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Archiver et nouveau tournoi
-            </button>
-            <button
-              type="button"
-              onClick={handleDeleteCurrentTournament}
-              disabled={!canEdit}
-              hidden={false}
-              className="mt-3 w-full rounded-xl bg-rose-500 px-4 py-3 font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Supprimer le tournoi actuel
-            </button>
-
-            <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/50 p-3">
-              <p className="text-sm font-semibold uppercase tracking-wide text-slate-200">Sons locaux</p>
-              <p className="mt-1 text-xs text-slate-400">
-                Ces sons sont synchronises avec le tournoi et partages a tous les appareils connectes.
-              </p>
-              {([
-                { key: 'victory', label: 'Victoire match' },
-                { key: 'score_low', label: 'Score < 10' },
-                { key: 'score_mid', label: 'Score 20 - 50' },
-                { key: 'score_high', label: 'Score > 60' },
-                { key: 'cricket_zero_turn', label: 'Cricket: 3 zeros' },
-              ] as { key: CustomSoundKey; label: string }[]).map((entry) => (
-                <div key={entry.key} className="mt-3 rounded-lg border border-slate-800 bg-slate-900/60 p-2">
-                  <p className="text-sm text-slate-200">{entry.label}</p>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    <label className="rounded-lg bg-slate-700 px-3 py-2 text-center text-xs font-bold uppercase tracking-wide text-white">
-                      Choisir fichier
-                      <input
-                        type="file"
-                        accept="audio/*"
-                        onChange={(event) => {
-                          const file = event.target.files?.[0]
-                          void handleUploadCustomSound(entry.key, file)
-                        }}
-                        className="hidden"
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => handleClearCustomSound(entry.key)}
-                      className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-100"
-                    >
-                      Retirer
-                    </button>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-400">
-                    {customSounds[entry.key] ? 'Son local actif' : 'Son synthese par defaut'}
-                  </p>
-                </div>
-              ))}
-            </div>
-            <p className="mt-3 text-sm text-amber-100">{feedback}</p>
+            <p className="mt-3 rounded-xl border border-slate-700 bg-slate-900/40 p-3 text-sm text-slate-300">
+              Les actions de tournoi et les choix de sons sont maintenant dans l onglet Options.
+            </p>
           </article>
 
           <article className="card-championship p-5">
@@ -1220,31 +1232,9 @@ function App() {
               {standings.length === 0 && <p className="p-3 text-slate-400">Aucun classement pour le moment.</p>}
             </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                if (!canEdit) {
-                  setFeedback('Seul l arbitre actif peut modifier le tournoi.')
-                  return
-                }
-                updateTournament((prev) => upsertKnockoutFromStandings(prev))
-                setFeedback('Phase finale calculee. Tu peux scorer les quarts.')
-                setSelectedPhase('quarter')
-                setActiveTab('matches')
-              }}
-              disabled={!canEdit}
-              className="mt-5 w-full rounded-xl bg-cyan-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Generer phase finale (Top 8)
-            </button>
-            <button
-              type="button"
-              onClick={handleDeleteKnockoutPhase}
-              disabled={!canEdit}
-              className="mt-3 w-full rounded-xl bg-slate-700 px-4 py-3 font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Supprimer phase finale
-            </button>
+            <p className="mt-5 rounded-xl border border-slate-700 bg-slate-900/40 p-3 text-sm text-slate-300">
+              Les actions de phase finale sont disponibles dans l onglet Options.
+            </p>
           </article>
         </section>
       )}
@@ -1291,6 +1281,141 @@ function App() {
             </article>
           ))}
           {state.teams.length === 0 && <p className="text-slate-300">Genere le tournoi pour afficher les equipes.</p>}
+        </section>
+      )}
+
+      {activeTab === 'options' && (
+        <section className="grid gap-6 lg:grid-cols-2">
+          <article className="card-championship p-5">
+            <h2 className="font-display text-3xl uppercase text-white">Actions tournoi</h2>
+            <p className="text-slate-300">
+              Tout est classe en 3 categories pour s y retrouver rapidement.
+            </p>
+
+            <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+              <p className="text-xs uppercase tracking-[0.2em] text-cyan-200">Categorie 1 - Joueurs et tirage</p>
+              <button
+                type="button"
+                onClick={handleAddPlayerRow}
+                disabled={!canEdit}
+                className="mt-3 w-full rounded-xl bg-slate-700 px-4 py-3 font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Ajouter une ligne joueur
+              </button>
+              <button
+                type="button"
+                onClick={handleGenerateTournament}
+                disabled={!canEdit}
+                className="mt-3 w-full rounded-xl bg-amber-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Generer 9 binomes + 3 poules
+              </button>
+            </div>
+
+            <div className="mt-3 rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+              <p className="text-xs uppercase tracking-[0.2em] text-cyan-200">Categorie 2 - Phase finale et simulation</p>
+              <button
+                type="button"
+                onClick={handleGenerateKnockoutPhase}
+                disabled={!canEdit}
+                className="mt-3 w-full rounded-xl bg-cyan-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Generer phase finale (Top 8)
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteKnockoutPhase}
+                disabled={!canEdit}
+                className="mt-3 w-full rounded-xl bg-slate-700 px-4 py-3 font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Supprimer phase finale
+              </button>
+              <button
+                type="button"
+                onClick={handleSimulatePoolsAndGenerateKnockout}
+                disabled={!canEdit}
+                className="mt-3 w-full rounded-xl bg-teal-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Simuler poules + generer quarts
+              </button>
+              <button
+                type="button"
+                onClick={handleSimulateKnockoutBracket}
+                disabled={!canEdit}
+                className="mt-3 w-full rounded-xl bg-fuchsia-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Simuler quarts, demies et finale
+              </button>
+            </div>
+
+            <div className="mt-3 rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+              <p className="text-xs uppercase tracking-[0.2em] text-cyan-200">Categorie 3 - Maintenance tournoi</p>
+              <button
+                type="button"
+                onClick={handleArchiveAndResetTournament}
+                disabled={!canEdit}
+                className="mt-3 w-full rounded-xl bg-rose-300 px-4 py-3 font-bold uppercase tracking-wide text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Archiver et nouveau tournoi
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteCurrentTournament}
+                disabled={!canEdit}
+                className="mt-3 w-full rounded-xl bg-rose-500 px-4 py-3 font-bold uppercase tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Supprimer le tournoi actuel
+              </button>
+            </div>
+          </article>
+
+          <article className="card-championship p-5">
+            <h2 className="font-display text-3xl uppercase text-white">Sons locaux</h2>
+            <p className="mt-1 text-sm text-slate-300">
+              Ces sons sont synchronises avec le tournoi et partages a tous les appareils connectes.
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              Regles: &lt; 10 sonore, 10 a 40 silencieux, 40 a 60 sonore, 60 a 80 sonore, plus de 80 sonore.
+            </p>
+
+            {([
+              { key: 'victory', label: 'Victoire match' },
+              { key: 'score_low', label: 'Score < 10' },
+              { key: 'score_40_60', label: 'Score 40 - 60' },
+              { key: 'score_60_80', label: 'Score 60 - 80' },
+              { key: 'score_80_plus', label: 'Score > 80' },
+              { key: 'cricket_zero_turn', label: 'Cricket: 3 zeros' },
+            ] as { key: CustomSoundKey; label: string }[]).map((entry) => (
+              <div key={entry.key} className="mt-3 rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                <p className="text-sm text-slate-200">{entry.label}</p>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <label className="rounded-lg bg-slate-700 px-3 py-2 text-center text-xs font-bold uppercase tracking-wide text-white">
+                    Choisir fichier
+                    <input
+                      type="file"
+                      accept="audio/*"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0]
+                        void handleUploadCustomSound(entry.key, file)
+                      }}
+                      className="hidden"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleClearCustomSound(entry.key)}
+                    className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-100"
+                  >
+                    Retirer
+                  </button>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  {customSounds[entry.key] ? 'Son local actif' : 'Son synthese par defaut'}
+                </p>
+              </div>
+            ))}
+            <p className="mt-4 text-sm text-amber-100">{feedback}</p>
+          </article>
         </section>
       )}
 
@@ -1429,7 +1554,9 @@ function App() {
                           <p className="text-lg text-slate-200">Flechette {activeLeg.dartsInTurn + 1}/3</p>
                         </div>
                         <div
-                          className="rounded-xl bg-slate-900 p-3 text-center"
+                          className={`rounded-xl bg-slate-900 p-3 text-center transition-shadow duration-300 ${
+                            activeLeg.activeSide === 'A' ? 'active-team-glow' : 'border border-slate-800'
+                          }`}
                           style={
                             teamA?.photoDataUrl
                               ? {
@@ -1449,7 +1576,9 @@ function App() {
                           </p>
                         </div>
                         <div
-                          className="rounded-xl bg-slate-900 p-3 text-center"
+                          className={`rounded-xl bg-slate-900 p-3 text-center transition-shadow duration-300 ${
+                            activeLeg.activeSide === 'B' ? 'active-team-glow' : 'border border-slate-800'
+                          }`}
                           style={
                             teamB?.photoDataUrl
                               ? {
@@ -1469,6 +1598,17 @@ function App() {
                           </p>
                         </div>
                       </div>
+
+                      {(activeLeg.type === 'x01-501' || activeLeg.type === 'x01-301') &&
+                        activeTeamScore !== undefined &&
+                        activeTeamScore <= 180 && (
+                          <div className="mt-3 rounded-xl border border-amber-300/40 bg-amber-200/10 p-3 text-center">
+                            <p className="text-xs uppercase tracking-[0.2em] text-amber-200">Checkout possible</p>
+                            <p className="mt-1 text-lg font-bold text-amber-100">
+                              {checkoutSuggestion ?? 'Aucune combinaison en 3 flechettes'}
+                            </p>
+                          </div>
+                        )}
 
                       {activeLeg.type === 'cricket' && (
                         <div className="mt-3 overflow-x-auto rounded-xl border border-slate-700">

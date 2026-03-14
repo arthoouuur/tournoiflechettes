@@ -65,10 +65,29 @@ export function playScoreBandSound(score: number, customSounds?: CustomSoundMap)
   if (score < 10 && playCustomSoundIfAvailable('score_low', customSounds)) {
     return
   }
-  if (score >= 10 && score <= 40 && playCustomSoundIfAvailable('score_mid', customSounds)) {
+
+  // 10-40: no sound requested
+  if (score >= 10 && score <= 40) {
     return
   }
-  if (score > 40 && playCustomSoundIfAvailable('score_high', customSounds)) {
+
+  if (score >= 40 && score <= 60 && playCustomSoundIfAvailable('score_40_60', customSounds)) {
+    return
+  }
+
+  if (score > 60 && score <= 80 && playCustomSoundIfAvailable('score_60_80', customSounds)) {
+    return
+  }
+
+  if (score > 80 && playCustomSoundIfAvailable('score_80_plus', customSounds)) {
+    return
+  }
+
+  // Backward compatibility for previously configured custom keys.
+  if (score >= 40 && score <= 60 && playCustomSoundIfAvailable('score_mid' as CustomSoundKey, customSounds)) {
+    return
+  }
+  if (score > 60 && playCustomSoundIfAvailable('score_high' as CustomSoundKey, customSounds)) {
     return
   }
 
@@ -82,12 +101,17 @@ export function playScoreBandSound(score: number, customSounds?: CustomSoundMap)
     return
   }
 
-  if (score >= 10 && score <= 40) {
-    playNotes(context, [329.63, 392], 0.5, 0.09, 'square')
+  if (score >= 40 && score <= 60) {
+    playNotes(context, [392, 523.25], 0.5, 0.09, 'square')
     return
   }
 
-  if (score > 40) {
+  if (score > 60 && score <= 80) {
+    playNotes(context, [523.25, 659.25, 783.99], 0.5, 0.08, 'sawtooth')
+    return
+  }
+
+  if (score > 80) {
     playNotes(context, [659.25, 783.99, 987.77], 0.5, 0.08, 'sawtooth')
   }
 }

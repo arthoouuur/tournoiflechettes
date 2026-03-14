@@ -10,8 +10,9 @@ export type DartMultiplier = 1 | 2 | 3
 export type CustomSoundKey =
   | 'victory'
   | 'score_low'
-  | 'score_mid'
-  | 'score_high'
+  | 'score_40_60'
+  | 'score_60_80'
+  | 'score_80_plus'
   | 'cricket_zero_turn'
 
 export type CustomSoundMap = Partial<Record<CustomSoundKey, string>>
